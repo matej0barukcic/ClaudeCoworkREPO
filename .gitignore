@@ -1,0 +1,9 @@
+ocr-index.json
+.DS_Store
+*.swp
+*~
+*.TEST.command
+*.log
+assets/tessdata/
+assets/tesseract-core-simd-lstm.wasm
+assets/tesseract-core-simd-lstm.wasm.js
