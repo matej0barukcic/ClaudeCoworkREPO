@@ -204,8 +204,19 @@ OMEJITVE, KI JIH JE DOBRO POZNATI
 - Aplikacija ne uporablja Windows iskalnega indeksa niti NTFS-ja neposredno,
   zato je hitrost prvega pregleda mape odvisna od brskalnika, ne od diska.
 - Trenutno sta na voljo dva jezika OCR: angleščina (ENG) in slovenščina (SLV).
-  Oba sta privzeto vklopljena (kljukici v orodni vrstici); lahko izklopite
-  enega, če veste, da besedilo na slikah ni v tem jeziku (hitrejši OCR).
+  Privzeto je vklopljena samo angleščina (ENG); slovenščino (SLV) lahko ročno
+  vklopite s kljukico v orodni vrstici, če besedilo na slikah vsebuje slovenščino
+  (dodaten jezik nekoliko upočasni OCR).
+
+LICENCE VGRAJENIH KNJIŽNIC
+--------------------------
+Ta aplikacija vključuje naslednje odprtokodne knjižnice in podatke tretjih
+oseb (v mapi assets/):
+- Tesseract.js (OCR mehanizem) — licenca Apache License 2.0
+- tessdata (jezikovni modeli za OCR, eng/slv) — licenca Apache License 2.0
+Ti deli NISO avtorsko delo tega projekta — so vključeni nespremenjeni kot
+odvisnosti. Ta opomba je za red v lastni dokumentaciji (ta repozitorij je
+zaseben, ni namenjen javni distribuciji).
 
 STRUKTURA MAPE
 ---------------

@@ -17,6 +17,14 @@ rem OPOZORILO ZA NASLEDNJEGA AGENTA/RAZVIJALCA: ta skripta v tem okolju (Linux, 
 rem bila dejansko izvedena/testirana - je analizirana in napisana po znanih vzorcih, po analogiji
 rem z resnicno potrjenim popravkom na macOS. Priporocljivo je preveriti na resnicnem Windows
 rem racunalniku pred prvo pravo uporabo (glej odprto tocko v HISTORY_AI_AGENT.txt).
+rem
+rem POPRAVEK (2026-09-23, TRETJA ITERACIJA, PO ANALOGIJI - glej HISTORY_AI_AGENT.txt): na macOS je
+rem bilo DEJANSKO POTRJENO, da se python3 lahko dejansko zazene (proces zivi), a v presmerjeno
+rem datoteko ne zapise sporocila "Serving HTTP..." dovolj hitro - najverjetneje zaradi blocnega
+rem (ne vrsticnega) predpomnjenja izhoda ob preusmeritvi v datoteko namesto v terminal. Zastavica
+rem "-u" (spodaj) prisili Python v NEPREDPOMNJEN izpis, kar to tveganje odpravi tudi tu - ta
+rem popravek na Windows NI bil se dejansko testiran (ni cmd.exe v tem okolju), a je zastavica "-u"
+rem standardna in neskodljiva, zato jo dodajamo preventivno po analogiji z dokazanim macOS popravkom.
 
 cd /d "%~dp0"
 
@@ -46,7 +54,19 @@ exit /b 1
 :gotport
 set "URL=http://127.0.0.1:%PORT%/index.html"
 echo Lokalni streznik tece na: %URL%
-start "" "%URL%"
+rem Popravek (2026-09-23, na uporabnikovo zeljo - glej HISTORY_AI_AGENT.txt, PO ANALOGIJI z macOS
+rem popravkom - NA PRAVEM WINDOWS SE NI BILO TESTIRANO, glej opozorilo na vrhu te datoteke): namesto
+rem odpiranja v PRIVZETEM brskalniku najprej poskusimo neposredno v Microsoft Edge. "where msedge"
+rem preveri, ali je msedge.exe najdljiv (PATH ali t.i. "App Paths" registrski vnos, kamor ga namesti
+rem privzeta namestitev Edge na Windows 10/11) - ce ni najden, se varno vrnemo na prejsnje vedenje
+rem (odpri v privzetem brskalniku), da uporabnik brez Edge-a se vedno dobi delujočo aplikacijo.
+where msedge >nul 2>nul
+if %errorlevel%==0 (
+    start "" msedge "%URL%"
+) else (
+    echo (Microsoft Edge ni bil najden - odpiram v privzetem brskalniku namesto tega.)
+    start "" "%URL%"
+)
 echo.
 echo To okno lahko zaprete - streznik bo v ozadju tekel v svojem oknu ("OCR Iskalnik slik - streznik %WORKING_CMD%").
 echo Ko koncate z uporabo aplikacije, zaprite TISTO okno, da ustavite streznik.
@@ -56,7 +76,7 @@ exit /b 0
 :try_candidate
 set "CAND=%~1"
 set "LOGFILE=%TEMP%\ocr-index-app-server-%RANDOM%.log"
-start "OCR Iskalnik slik - streznik %CAND%" /min cmd /c "%CAND% -m http.server 0 --bind 127.0.0.1 > "%LOGFILE%" 2>&1"
+start "OCR Iskalnik slik - streznik %CAND%" /min cmd /c "%CAND% -u -m http.server 0 --bind 127.0.0.1 > "%LOGFILE%" 2>&1"
 set "FOUNDPORT="
 set /a TRIES=0
 :waitport_sub

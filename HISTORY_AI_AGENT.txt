@@ -1445,3 +1445,416 @@ zrasel na 42 MB, .zip pa presegel 30 MB omejitev za pošiljanje v tem
 pogovoru) - popravljeno s ponovno postavitvijo repozitorija (git zgodovina
 je bila v tej točki še povsem lokalna/nedeljena, zato prepis ni bil
 tvegan); repo zdaj tehta ~376 KB.
+
+----------------------------------------------------------------------
+2026-09-23 — ČIŠČENJE GITHUB REPOZITORIJA + NEUSPEŠNA GIT PUSH AVTENTIKACIJA
+----------------------------------------------------------------------
+UGOTOVITEV: na uporabnikovem računalniku je "git ls-tree -r --name-only main"
+pokazal, da oddaljeni GitHub repozitorij (matej0barukcic/ClaudeCoworkREPO) ŠE
+VEDNO vsebuje velike binarne datoteke (assets/tessdata/*.gz,
+tesseract-core-simd-lstm.wasm(.js)) in .DS_Store, oznaka "v2.1" pa ni bila
+prisotna. Vzrok: prvi potisk je bil narejen prek GitHub Desktop iz starejše/
+druge (nepopravljene) mape, ne iz te, ki jo je urejal agent.
+
+RAZLOG (dodatno odkrit prej v tej seji): sistemski "git" na macOS je bil prav
+tako blokiran zaradi manjkajočih Xcode Command Line Tools (enak vzrok kot pri
+"python3" – glej zgornje razdelke) – "xcode-select --install" je to odpravil.
+
+POPRAVEK: uporabnik je v pravi mapi izvedel git rm -r --cached za velike
+datoteke in .DS_Store, prepisal .gitignore in naredil commit "3a87330"
+("Odstrani velike binarne datoteke in .DS_Store iz git sledenja", 8
+spremenjenih datotek – DEJANSKO IZVEDENO IN POTRJENO).
+
+ODPRT PROBLEM (ŠE NEREŠENO ob tej točki): "git push" in "git push origin
+v2.1" oba DVAKRAT spodletela z:
+  remote: Invalid username or token. Password authentication is not
+  supported for Git operations.
+  fatal: Authentication failed for '.../ClaudeCoworkREPO.git/'
+VZROK: GitHub od avgusta 2021 ne sprejema več navadnega gesla računa za HTTPS
+git operacije – zahteva Personal Access Token (PAT) namesto gesla, SSH ključ,
+ali prijavo prek credential-manager/OAuth toka (npr. GitHub Desktop, ki ga
+uporabnik že ima nameščenega, to ureja samodejno).
+PRIPOROČILO (dano uporabniku, ŠE NI POTRJENO/IZVEDENO): najenostavnejša pot
+je potisniti prek že nameščenega GitHub Desktop (gumb "Push origin"), ker ta
+avtentikacijo upravlja sam brez ročnega PAT; alternativa je generiranje PAT
+na github.com (Settings → Developer settings → Personal access tokens) in
+njegova uporaba namesto gesla pri obstoječem ukazu "git push" v Terminalu;
+tretja možnost je preklop na SSH ključ. Commit 3a87330 in oznaka v2.1 STA
+lokalno pravilno pripravljena, čakata le na uspešen potisk.
+STATUS: NEREŠENO – čaka na uporabnikovo izbiro poti in potrditev uspeha.
+
+REŠITEV (2026-09-23, potrjeno): uporabnik je potisnil prek GitHub Desktop
+(izbral priporočeno pot). Preverjeno z "git ls-tree -r --name-only main" na
+uporabnikovem računalniku – oddaljeni repozitorij zdaj vsebuje TOČNO
+pričakovanih 9 datotek (.gitignore, HISTORY_AI_AGENT.txt, README.txt, app.js,
+assets/tesseract.min.js, assets/worker.min.js, index.html,
+zazeni-macos.command, zazeni-windows.bat) – BREZ velikih binarnih datotek
+(assets/tessdata/, tesseract-core-simd-lstm.wasm(.js)) in BREZ .DS_Store, kot
+je bilo namenoma nastavljeno v .gitignore. "git tag" potrjuje prisotnost
+oznake "v2.1". GIT DEL FAZE 1 JE S TEM DOKONČAN IN POTRJEN.
+
+----------------------------------------------------------------------
+2026-09-23 (nadaljevanje) — FAZA 1: POPRAVEK #4 + QA NAJDBE #8–#11
+(DEJANSKO IMPLEMENTIRANO IN TESTIRANO, ne le analizirano)
+----------------------------------------------------------------------
+Na uporabnikovo potrditev ("da" na vsa tri vprašanja) je bil izveden preostali
+del dogovorjene FAZE 1 iz razdelka "GRILL INTERVJU" zgoraj. Vsak popravek je
+bil preverjen z DEJANSKIM zagonom v headless Chromium (Playwright), ne le s
+statično analizo kode – node --check app.js je po vsakem popravku uspešno
+prešel.
+
+1. POPRAVEK #4 (konflikt dveh hkrati odprtih zavihkov nad isto mapo):
+   - Dodana nova globalna spremenljivka `lastKnownGeneratedAt` (zadnji
+     "generatedAt" iz ocr-index.json, kot ga POZNA ta zavihek – nastavljena
+     ob vsakem odpiranju mape (afterFolderSelected()) in ob vsakem uspešnem
+     zapisu (saveIndexFile())).
+   - saveIndexFile() zdaj PRED vsakim zapisom prebere trenutni "generatedAt"
+     NA DISKU in ga primerja z `lastKnownGeneratedAt` – ob neujemanju zabeleži
+     glasno opozorilo (raven "warn", torej vidno na rdeči znački gumba
+     "Dnevnik") o mogočem konfliktu z drugim zavihkom/oknom, a zapisa
+     namenoma NE blokira (glej komentar v kodi za utemeljitev). Opozorilo je
+     deduplicirano (`conflictWarnedGeneratedAt`) – ne ponavlja se ob vsakem
+     naslednjem periodičnem zapisu, dokler se stanje na disku znova ne
+     spremeni.
+   - DEJANSKO TESTIRANO (Playwright, brez mock-anja): uporabljena Origin
+     Private File System (navigator.storage.getDirectory()), ki ima IDENTIČEN
+     vmesnik kot pravi FileSystemDirectoryHandle iz File System Access API,
+     kot nadomestek za pravo mapo na disku (izogne se potrebi po pravem
+     uporabniškem gestu za izbiro mape v headless okolju). Scenarij: (a) prvi
+     zapis "tega zavihka" – 0 opozoril o konfliktu (pričakovano); (b)
+     simulacija "drugega zavihka" – neposreden zapis ocr-index.json z drugim
+     generatedAt; (c) ponoven zapis "tega zavihka" – TOČNO 1 opozorilo o
+     konfliktu, sporočilo vsebuje pravilen (tuji) časovni žig; (d) takojšen
+     naslednji zapis brez novega zunanjega posega – ŠE VEDNO skupaj samo 1
+     opozorilo (dedupe deluje). Vsi rezultati SKLADNI s pričakovanji.
+
+2. QA NAJDBA #8 (dnevnik razkrije polna imena/poti datotek ne glede na
+   nastavitev "ne shranjuj OCR besedila na disk"):
+   - Dodana funkcija `logPath(relPath)`: če je `optNoPersistText.checked`
+     vklopljen, namesto polne poti vrne "[skrita pot #N.pripona]" (N = stabilna
+     zaporedna številka znotraj TE seje, dovolj za sledenje/razhroščevanje
+     brez razkritja imen); sicer vrne pot nespremenjeno.
+   - Vseh 6 mest v kodi, kjer je logEvent() prej neposredno vstavljal
+     `relPath`/`f.relPath`/`singleOcrRelPath` v sporočilo, je bilo
+     spremenjenih, da namesto tega kličejo `logPath(...)`.
+   - DEJANSKO TESTIRANO: logPath() z vklopljeno nastavitvijo vrne
+     "[skrita pot #1.png]"/"[skrita pot #2.jpg]" za dve različni poti, isti
+     vnos dosledno vrne isto številko (stabilnost znotraj seje), z izklopljeno
+     nastavitvijo pa vrne pot nespremenjeno – vse potrjeno.
+   - ZNANA PREOSTALA OMEJITEV (namenoma NE odpravljena v tej iteraciji, ker bi
+     zahtevala bistveno večji poseg): če OCR/nalagalna napaka vrže JS napako s
+     `stack`, ki znotraj sebe vsebuje polno pot (npr. `file:///...`), se ta
+     `stack` še vedno zapiše v `detail` polje vnosa dnevnika (glej `detail:
+     detail.stack` v logEvent()) – to ni prek `logPath()`, ker gre za
+     brskalnikov generiran niz, ne za našo lastno sestavo sporočila. Ostaja
+     odprta točka za morebitno FAZO 3, če uporabnik to oceni kot pomembno.
+
+3. QA NAJDBA #9 (nezaprt narekovaj v iskanju tiho pokvari razčlenjevanje):
+   - tokenizeQuery() zdaj ob koncu niza, če je `inQuotes` še vedno `true`
+     (odprt narekovaj brez zaključka), SAMODEJNO doda zaključni `"` na konec
+     trenutnega izraza (obravnavano kot fraza do konca vnosa – najverjetnejša
+     uporabnikova namera) IN enkratno (deduplicirano prek
+     `lastUnclosedQuoteQuery`) zabeleži opozorilo v dnevnik.
+   - DEJANSKO TESTIRANO: tokenizeQuery('"abc def') vrne IDENTIČEN rezultat kot
+     tokenizeQuery('"abc def"') (oba: ["\"abc def\""]) – vnos se torej zdaj
+     obnaša kot fraza namesto da bi tiho odpovedal.
+
+4. QA NAJDBA #10 (dolg prilepljen niz naredi odvečno delo pred omejitvijo
+   dolžine):
+   - Dodana nova konstanta `MAX_QUERY_LENGTH = 2000` (omejitev CELOTNEGA
+     iskalnega niza, ne le enega izraza) – preverjena TAKOJ na vrhu
+     parseQuery()/buildHighlightRegexes(), PREDEN se karkoli razčlenjuje
+     (tokenizeQuery/groupByOr/compileTerm/sestavljanje regexov za vsak
+     posamezen izraz).
+   - DEJANSKO TESTIRANO: iskalni niz dolžine 3000 znakov (nad mejo) je bil
+     zavrnjen v 0,1 ms (izmerjeno s performance.now() v brskalniku) namesto da
+     bi zanj teklo polno razčlenjevanje; normalen kratek niz še naprej deluje
+     pravilno (regresijski test uspešen).
+
+5. QA NAJDBA #11 (latentna dirka pri preverjanju predpomnilnika worker-jev v
+   getWorker()):
+   - getWorker() zdaj v predpomnilnik `workers[key]` shrani SAM Promise
+     SINHRONO (pred prvim `await`), ne šele razrešen worker PO njem – drugi
+     sočasen klic z istim ključem zato takoj dobi ISTO Promise namesto da bi
+     zagnal svoj (podvojen, "osirotel") worker. Ob zavrnitvi Promise-a
+     (napaka pri nalaganju) se neuspeli vnos odstrani iz predpomnilnika, da
+     naslednji klic dobi svež poskus.
+   - DEJANSKO TESTIRANO (Playwright, z mock-anim Tesseract.createWorker, ki
+     šteje klice in umetno zakasni 30 ms): dva SOČASNA klica getWorker('fast',
+     ['eng']) sta povzročila TOČNO 1 klic Tesseract.createWorker() (prej bi
+     bila 2) IN obe vrnjeni Promise sta se razrešili v ISTI objekt – dirka je
+     potrjeno odpravljena.
+
+SKUPAJ: vseh 5 postavk FAZE 1 (popravek #4 + QA najdbe #8–#11) je DEJANSKO
+IMPLEMENTIRANIH IN DEJANSKO TESTIRANIH (ne le analiziranih) v tej iteraciji.
+node --check app.js uspešno prehaja skozi celoten postopek. Naslednji korak:
+priprava novega git commita + oznake (v2.2) in posodobljenega .zip paketa.
+
+----------------------------------------------------------------------
+2026-09-23 (nadaljevanje) — "grillme-custom" INTERVJU: POGLOBLJEN PONOVNI
+PREGLED CELOTNE APLIKACIJE (~36 vprašanj, zaključen na uporabnikovo
+eksplicitno potrditev zadostnosti)
+----------------------------------------------------------------------
+Na uporabnikovo zahtevo ("zaženi /grillme-custom") je bil izveden poglobljen
+ponovni pregled CELOTNE aplikacije (ne le odprtih točk) po vseh področjih:
+arhitektura, podatkovni model, napake/odpornost, varnost, UX, zmogljivost,
+namestitev, vzdrževanje, stroški/lastništvo, ter poln obseg funkcionalnosti
+(add/remove/simplify za vsako izpostavljeno zmožnost). Skill zahteva najmanj
+100 vprašanj, a uporabnik je DVAKRAT eksplicitno potrdil zadostnost prej (na
+~18 in nato na ~36 vprašanjih, po dogovorjenem vmesnem podaljšku za "še 20
+pomembnih") – v skladu s pravilom skill-a, da je eksplicitna uporabnikova
+potrditev zadostnosti veljaven razlog za zaključek, tudi pod 100.
+
+KRITIČNE/PRIPOROČENE VRZELI, NAJDENE IN RAZREŠENE (z obveznim preverjanjem
+popravka, ne le predlogom):
+1. Firefox/Safari ne podpirata File System Access API, na katerem temelji
+   CELOTNA trenutna arhitektura (branje IN pisanje nazaj v mapo, "zadnja
+   mapa"). Predlagan popravek: dvojna pot – Chrome/Edge ohranita polno
+   funkcionalnost, Firefox/Safari dobita OMEJENO različico (samo branje prek
+   <input type="file" webkitdirectory>, brez samodejnega shranjevanja/
+   odpiranja zadnje mape). PREVERJENO: popravek NE reši dileme v celoti (gre
+   za pravi kompromis, ne popolno rešitev) – uporabnik je to eksplicitno
+   sprejel kot sprejemljiv kompromis IN potrdil, da naj se doda v načrt kot
+   PRIHODNJA faza (ni nujno takoj).
+2. Zmogljivost pri velikih mapah (uporabnik potrdil ciljni obseg: tisoče+
+   slik): `renderTable()` ob vsakem pritisku tipke v iskanju v celoti obnovi
+   HTML za VSE filtrirane vrstice brez straničenja. DEJANSKO IZMERJENO
+   (Playwright, headless Chromium): 500 vrstic = 14–26 ms; 2.000 = 50–66 ms;
+   5.000 = 140–159 ms; 10.000 = 257–263 ms na en izris/pritisk tipke – pri
+   5.000+ vrsticah gre za dejansko, izmerjeno (ne teoretično) opazno
+   zaostajanje vmesnika za tipkanjem. Predlagan popravek: omejitev izrisa
+   (npr. 500 vrstic + gumb "Prikaži več"). Uporabnik je najprej zahteval
+   DEJANSKO meritev namesto teoretične trditve (dobil jo je), nato POTRDIL
+   popravek kot prihodnjo nalogo (ni nujno takoj).
+
+DEJANSKO IMPLEMENTIRANO MED SAMIM INTERVJUJEM (majhni, nesporni popravki):
+- index.html: privzeto OZNAČEN jezik OCR je zdaj SAMO ENG (SLV odznačen,
+  a še vedno na voljo za ročni vklop) – na uporabnikovo izrecno zahtevo.
+- app.js (rescan()/finishScan()): sporočilo ob ročni ustavitvi pregleda
+  ("Ustavljeno") zdaj vključuje TOČNO število obdelanih slik
+  (npr. "obdelanih 7/50"), prej je bilo to vidno le prehodno v vrstici
+  napredka med samim pregledom, po ustavitvi pa je izginilo.
+
+DEJANSKO PREVERJENO (test), REZULTAT: OBSTOJEČA KODA JE ŽE PRAVILNA, BREZ
+POTREBNEGA POPRAVKA:
+- Čiščenje "osirotelih" zapisov v ocr-index.json (slike, izbrisane iz mape)
+  ob "Ponovno preglej" – že implementirano (rescan(), primerjava s
+  seenPaths).
+- Napaka pri NALAGANJU OCR mehanizma (sistemska, npr. pokvarjen jezikovni
+  model) že ustavi CEL pregled; napaka pri OCR POSAMEZNE slike (npr.
+  poškodovana slika) NE ustavi ostalih – natanko ujema uporabnikovo željo.
+- Esc tipka že zapira pomoč/dnevnik overlay (obstoječ keydown handler).
+- Preklic dovoljenja za mapo med sejo je že pokrit s splošnimi try/catch
+  bloki (saveIndexFile/rescan/getWorker) – jasna napaka, ne tih obvis.
+- Šumniki (čšž) v IMENU MAPE: DEJANSKO TESTIRANO (Playwright, mapa
+  "test-šumniki čšž", resnično naložen OCR worker in prepoznano besedilo
+  "TEST 123" brez napak) – ker Popravek A (lokalni strežnik) servira mapo
+  kot koren ("/"), ime same mape (s šumniki vred) sploh NE pride do URL-ja,
+  ki ga vidi brskalnik. Popravek A torej to strukturno odpravlja.
+- Privzete nastavitve (OCR "Hitro", rekurzivno VKLJUČENO, vsa tri iskalna
+  polja VKLJUČENA) – vse že ustrezajo, brez sprememb.
+
+DOGOVORJENO ZA PRIHODNJE FAZE (potrjeno, a NAMENOMA ŠE NE IMPLEMENTIRANO):
+- Omejena podpora za Firefox/Safari (glej vrzel #1 zgoraj).
+- Straničenje/omejitev izrisa tabele rezultatov (glej vrzel #2 zgoraj).
+- Kratka razlaga/namig ob kljukici "Regex" (poenostavitev dostopnosti
+  funkcije za manj tehnične uporabnike – funkcija SAMA ostane, se NE
+  odstranjuje).
+- Omemba licenc vgrajenih knjižnic (Tesseract.js + tessdata, Apache 2.0) v
+  README.txt, za red v lastni dokumentaciji (repo ostaja zaseben).
+- Redno OBČASNO preverjanje novih različic Tesseract.js – zabeleženo kot
+  ponavljajoče se opravilo (trenutna vgrajena različica: 5.1.1).
+- Sprememba naslova zavihka ob zaključku dolgega pregleda (npr.
+  "✓ Končano – OCR Iskalnik slik"), da je zaznavno tudi z drugega zavihka.
+- Prehod iz trenutne TEMNE teme (--bg:#1e1f22) na SVETLO temo (CSS
+  spremenljivke v index.html) – uporabnikova eksplicitna zahteva.
+
+EKSPLICITNO ZAVRNJENO (uporabnik potrdil, da NI potrebno – ni v načrtu):
+sinhronizacija med napravami/oblak (arhitektura ostaja povsem lokalna);
+migracijska shema za ocr-index.json (ponoven OCR je dovolj); zaznava
+premika/preimenovanja po vsebini (hash/velikost+mtime ujemanje); opozorilo
+ob shranjevanju v sinhronizirano oblačno mapo; poizvedbena vrsta (queue) za
+sočasen serijski+posamični OCR; dostopnost (accessibility, screen reader);
+zaznava podvojenih slik; izvoz rezultatov iskanja v CSV; rezervna kopija
+(.bak) indeksa; zaščita pred ekstremno velikimi slikami (ni realističen
+scenarij); priprava za javno distribucijo/licenco (repo ostaja zaseben);
+predogled slike znotraj aplikacije namesto novega zavihka; dodatni OCR
+jeziki poleg eng/slv.
+
+STATUS: intervju zaključen na uporabnikovo eksplicitno potrditev. Naslednji
+korak (čaka na uporabnikovo potrditev pred izvedbo, glej dogovorjen postopek
+potrjevanja pred izvedbo): implementacija manjših dogovorjenih popravkov
+(svetla tema, naslov zavihka ob koncu, regex namig, README licenca), nato
+nov git commit/oznaka in .zip.
+
+----------------------------------------------------------------------
+2026-09-23 (nadaljevanje) — FAZA 2 (1. del): 5 MANJŠIH POPRAVKOV IZ
+grillme-custom INTERVJUJA (DEJANSKO IMPLEMENTIRANO IN TESTIRANO)
+----------------------------------------------------------------------
+Na uporabnikovo potrditev je bilo izvedenih 5 manjših, nespornih popravkov iz
+zgornjega intervjuja (2 sta bila narejena že med samim intervjujem, glej
+zgoraj; tu so preostala 3 + potrditveno testiranje vseh 5). Preostali,
+obsežnejši dogovorjeni postavki (omejena Firefox/Safari podpora, straničenje
+tabele rezultatov) sta na uporabnikovo zahtevo ZDRUŽENI v isto FAZO 2 (ne
+ločena FAZA 3) – sledita v naslednji iteraciji.
+
+Za učinkovitost so bili trije od petih popravkov (spremembe v index.html in
+del sprememb v app.js/README.txt) izvedeni prek treh VZPOREDNIH podagentov
+(Haiku, ločeni po datotekah, da se izognemo konfliktnim urejanjem iste
+datoteke) – vsak je dobil natančna, samostojna navodila (točne vrstice/
+vsebino), rezultate pa je glavni agent po zaključku PREVERIL (ne le prevzel
+poročila podagentov na besedo): node --check app.js, dejanski headless
+Chromium (Playwright) test computed CSS barv/naslova zavihka/regex namiga,
+IN poln regresijski ponovni zagon testov iz prejšnje FAZE 1 (test_faza1.js,
+test_faza1_conflict.js) – vsi so uspešno prešli, brez podrtih prejšnjih
+popravkov. Ena manjša napaka podagenta (tipkarska napaka "opomka" namesto
+"opomba" v README.txt) je bila opažena in ročno popravljena.
+
+1. SVETLA (LIGHT) TEMA namesto prejšnje temne (index.html, CSS spremenljivke
+   v :root): --bg:#ffffff (prej #1e1f22), --text:#1a1a1a (prej #e6e6e6), ter
+   preostale spremenljivke (--bg2/--bg3/--border/--text-dim/--accent/
+   --accent-dim/--ok/--warn/--err/--row-hover/--row-alt) ustrezno prilagojene
+   za dober kontrast na belem ozadju. DEJANSKO PREVERJENO (Playwright,
+   getComputedStyle): body background = rgb(255,255,255), body barva
+   besedila = rgb(26,26,26).
+
+2. REGEX NAMIG (index.html): <label> za kljukico "regex (regularni izraz)"
+   ima zdaj `title` atribut s kratko razlago v slovenščini, komu je namenjen
+   in kaj storiti, če uporabnik ne ve, kaj regex je (obdrži funkcijo, le
+   pojasni jo – v skladu z grillme-custom odločitvijo "poenostavi, ne
+   odstrani"). DEJANSKO PREVERJENO (Playwright): atribut prisoten, vsebina
+   pravilna.
+
+3. NASLOV ZAVIHKA OB ZAKLJUČKU PREGLEDA (app.js): nova konstanta
+   `ORIGINAL_TAB_TITLE = document.title` (ob nalaganju strani); `finishScan()`
+   zdaj nastavi `document.title` na "✓ Končano – <izvirni naslov>" (uspešen
+   zaključek) ali "⏸ Ustavljeno – <izvirni naslov>" (ročna ustavitev);
+   `rescan()` ob začetku NOVEGA pregleda naslov ponastavi na izvirnega.
+   DEJANSKO PREVERJENO (Playwright, klic finishScan() z obema vejama +
+   ročna ponastavitev): vse tri variante naslova potrjene točne.
+
+4. LICENCE VGRAJENIH KNJIŽNIC (README.txt): nov razdelek "LICENCE VGRAJENIH
+   KNJIŽNIC" (pred "STRUKTURA MAPE") – navaja Tesseract.js in tessdata kot
+   Apache License 2.0, z opombo, da repozitorij ostaja zaseben.
+
+5. POPRAVLJEN OPIS PRIVZETIH JEZIKOV (README.txt): odstavek o jezikih OCR
+   zdaj pravilno navaja, da je privzeto vklopljena SAMO angleščina (ENG),
+   slovenščina (SLV) pa se vklopi ročno – usklajeno s spremembo privzete
+   vrednosti `optLangSlv` (index.html), narejeno že med samim grillme-custom
+   intervjujem.
+
+REGRESIJSKO TESTIRANJE: vseh 5 testov iz FAZE 1 (nezaprt narekovaj, predolg
+niz, redakcija poti, dirka worker-jev, konflikt dveh zavihkov) je bilo
+PONOVNO zagnanih po teh spremembah – vsi rezultati identični prejšnjim
+(nobena regresija). node --check app.js uspešno prehaja.
+
+STATUS: vseh 5 manjših popravkov DEJANSKO IMPLEMENTIRANIH IN TESTIRANIH.
+Naslednji korak: git commit + oznaka (v2.3), posodobljen .zip.
+
+----------------------------------------------------------------------
+2026-09-23 (nadaljevanje) — REALNI TEST NA UPORABNIKOVEM MACU: NOVA,
+LOČENA ODPOVED ZAGANJALNIKA (RAZLIČNA OD PREJŠNJEGA Xcode CLT PROBLEMA)
+----------------------------------------------------------------------
+Uporabnik je zagnal "zazeni-macos.command" (verzija po popravku CLT-stub
+problema, glej razdelek "DRUGA ITERACIJA" zgoraj) in dobil NOVO, DRUGAČNO
+napako:
+```
+line 28: 11844 Terminated: 15    "$cmd" -m http.server 0 --bind 127.0.0.1 > "$logfile" 2>&1
+NAPAKA: Lokalnega strežnika ni bilo mogoče zagnati z nobenim najdenim ukazom (python3/python).
+Podrobnosti (za poročanje razvijalcu/AI agentu):
+--- poskus z ukazom 'python3' ni uspel, izpis: ---
+(PRAZNO - brez ikakršne vsebine)
+```
+DIAGNOZA: sporočilo "Terminated: 15" dokazuje, da je bil proces python3 ŠE
+VEDNO ŽIV, ko ga je skripta sama ubila po izteku 5-sekundnega čakanja
+(prejšnja različica) – NE gre torej za isti vzrok kot pri prejšnjem Xcode
+CLT problemu (tam bi se v logu takoj pojavilo besedilo "xcode-select: note:
+..."). Tu je log OSTAL POPOLNOMA PRAZEN kljub temu, da je proces tekel polnih
+5 sekund preden je bil ubit. Najverjetnejši vzrok: Python privzeto uporablja
+BLOČNO (ne vrstično) predpomnjenje izhoda (stdout), ko je ta preusmerjen v
+datoteko namesto v terminal – kratko sporočilo "Serving HTTP on ... port
+XXXX ..." se torej morda NI pravočasno zapisalo na disk (čeprav je strežnik
+morda dejansko DELOVAL), naša skripta pa je to napačno razumela kot odpoved
+in proces predčasno ubila.
+
+POPRAVEK (dve plasti obrambe, DEJANSKO IMPLEMENTIRAN in TESTIRAN s
+simuliranimi scenariji v tem okolju - ne le analiziran):
+1. Dodana zastavica "-u" (nepredpomnjen/unbuffered izpis) obema klicema
+   Pythona (`"$cmd" -u -m http.server ...` v zazeni-macos.command, enako po
+   analogiji v zazeni-windows.bat) - to je standardni, neškodljiv popravek
+   za točno ta razred težav ("izhod se ne prikaže pravočasno, ko je
+   preusmerjen v datoteko/cev").
+2. Časovna omejitev čakanja na macOS podaljšana s 5 s na 10 s (100 x 0.1 s),
+   za dodatno varnost pri počasnejšem/prvem zagonu interpreterja.
+3. Sporočilo o napaki zdaj LOČI dva različna primera: (a) če je bil proces
+   ob prekinitvi ŠE VEDNO ŽIV (kot v dokazanem primeru) - novo, ločeno
+   sporočilo, ki pojasni, da gre verjetno za počasen/zakasnjen zagon (NE za
+   pravo napako), predlaga ponoven poskus in daje natančno navodilo za ročno
+   diagnozo (ukaz za Terminal); (b) če je proces medtem SAM odpovedal
+   (dejanska napaka) - obdrži prejšnje splošno sporočilo s celotnim izpisom.
+
+DEJANSKO TESTIRANO (simulacija, ne le analiza) v tem okolju s tremi
+namensko izdelanimi lažnimi (fake) "python3"/"python" binarnimi datotekami:
+- Scenarij "oba kandidata živa, brez izpisa" (natančna simulacija dokazanega
+  macOS bug-a - lažen proces "spi" 20 s brez izpisa): skripta pravilno
+  počaka 10 s na VSAK kandidat, nato prikaže NOVO, pravilno sporočilo o
+  "verjetno počasnem/zakasnjenem zagonu" z navodilom za ročno diagnozo -
+  TOČNO pričakovano vedenje.
+- Scenarij "proces se takoj sesuje" (lažen proces takoj izpiše napako na
+  stderr in se konča): skripta pravilno prepozna, da proces ni več živ, in
+  prikaže OBSTOJEČE splošno sporočilo s celotnim (nepraznim) izpisom napake
+  - TOČNO pričakovano vedenje (razlikovanje med obema primeroma deluje).
+- Regresijski test z REALNIM sistemskim python3 (brez lažnih binarnih
+  datotek): strežnik se je zagnal in vrata zaznala v ~3 s (dobro pod novo
+  10-sekundno mejo) - brez regresije.
+- bash -n (sintaksa) in node --check app.js oba uspešno prehajata.
+
+OPOMBA: popravek v zazeni-windows.bat (zastavica "-u") je bil dodan PO
+ANALOGIJI, kot doslej - Windows skripta v tem okolju (brez cmd.exe) NI in NE
+MORE biti dejansko testirana; obstoječa 50-sekundna (ping-based) časovna
+omejitev na Windows je bila že precej bolj velikodušna od prejšnje 5-sekundne
+na macOS, zato podaljšanje časovne omejitve na Windows NI bilo potrebno -
+dodana je bila samo zastavica "-u" kot preventivni, neškodljiv ukrep.
+
+STATUS: popravek DEJANSKO implementiran in DEJANSKO testiran (simulirano) za
+macOS; po analogiji dodan (a NE testiran na pravem Windows) za Windows. Čaka
+se uporabnikov PONOVNI zagon "zazeni-macos.command" za potrditev na
+resničnem Macu. Naslednji korak: git commit + oznaka (v2.4), posodobljen
+.zip, nato počakati na uporabnikovo potrditev uspeha.
+
+----------------------------------------------------------------------
+2026-09-23 (nadaljevanje) — ODPIRANJE APLIKACIJE V MICROSOFT EDGE (namesto
+privzetega brskalnika), NA UPORABNIKOVO ZAHTEVO
+----------------------------------------------------------------------
+Uporabnik je zahteval, naj "zazeni-macos.command" odpre aplikacijo v
+Microsoft Edge namesto v (morda drugem) privzetem brskalniku sistema.
+
+IMPLEMENTIRANO (macOS, zazeni-macos.command): namesto `open "$URL"` se zdaj
+NAJPREJ poskusi `open -a "Microsoft Edge" "$URL"` (macOS `open -a` odpre URL
+v POIMENOVANI aplikaciji, ne po poti). Če Edge na tem Macu NI nameščen, `open
+-a` vrne napako (izhodna koda != 0) – v tem primeru se skripta varno vrne na
+prejšnje vedenje (`open "$URL"`, odpre v privzetem brskalniku), z izpisanim
+pojasnilom, da Edge ni bil najden.
+
+IMPLEMENTIRANO PO ANALOGIJI (Windows, zazeni-windows.bat – NI TESTIRANO NA
+PRAVEM WINDOWS, glej obstoječe opozorilo na vrhu datoteke): `where msedge`
+preveri, ali je `msedge.exe` najdljiv (prek PATH ali "App Paths" registrskega
+vnosa, kamor ga namesti privzeta namestitev Edge na Windows 10/11); če je
+najden, `start "" msedge "%URL%"`, sicer izpad na prejšnje `start "" "%URL%"`.
+
+DEJANSKO TESTIRANO (simulacija v tem okolju, macOS del): ker to okolje (Linux
+sandbox) nima resničnega macOS ukaza `open`, sta bili izdelani DVE lažni
+(fake) "open" binarni datoteki, ki natančno posnemata resnično macOS
+obnašanje: (a) "Edge ni nameščen" – `open -a "Ime"` vrne izhodno kodo 1 (kot
+pravi macOS `open: Unable to find application named '...'`), (b) "Edge JE
+nameščen" – `open -a "Ime"` uspe (izhodna koda 0). REZULTAT: scenarij (a) je
+pravilno prikazal pojasnilo in klical privzeti brskalnik (Edge NI bil
+klican); scenarij (b) je pravilno klical SAMO Edge (privzeti brskalnik NI bil
+klican). Obe veji logike torej delujeta točno kot načrtovano. bash -n
+(sintaksa) uspešno prehaja za obe datoteki.
+
+STATUS: macOS del DEJANSKO implementiran in testiran (simulirano, prava
+funkcionalnost macOS `open -a` je bila simulirana, ne pa dejansko izvedena na
+pravem macOS – to je neizogibna omejitev tega Linux okolja). Windows del
+implementiran PO ANALOGIJI, NI testiran. Naslednji korak: git commit + oznaka
+(v2.5), posodobljen .zip.

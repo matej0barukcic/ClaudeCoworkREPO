@@ -6,9 +6,9 @@
 <title>OCR Iskalnik slik (OCR Image Search)</title>
 <style>
   :root{
-    --bg:#1e1f22; --bg2:#26282c; --bg3:#2f3136; --border:#3c3f44;
-    --text:#e6e6e6; --text-dim:#9a9ea5; --accent:#4f9dff; --accent-dim:#2b5d9e;
-    --ok:#3fbf5f; --warn:#e0a53f; --err:#e05f5f; --row-hover:#2c3540; --row-alt:#232427;
+    --bg:#ffffff; --bg2:#f3f4f6; --bg3:#e9eaed; --border:#d0d2d6;
+    --text:#1a1a1a; --text-dim:#6b7075; --accent:#2f7de1; --accent-dim:#dbe8fb;
+    --ok:#2f9e4f; --warn:#c9871f; --err:#d13f3f; --row-hover:#eaf2fd; --row-alt:#f7f8f9;
   }
   *{box-sizing:border-box;}
   html,body{height:100%;}
@@ -170,7 +170,7 @@
   <div class="sep"></div>
   <label class="opt"><input type="checkbox" id="optRecursive" checked> vključi podmape</label>
   <label class="opt"><input type="checkbox" id="optLangEng" checked> ENG</label>
-  <label class="opt"><input type="checkbox" id="optLangSlv" checked> SLV</label>
+  <label class="opt"><input type="checkbox" id="optLangSlv"> SLV</label>
   <select id="optOcrQuality" title="Kakovost OCR za nove/spremenjene slike pri (ponovnem) pregledu">
     <option value="fast" selected>OCR: Hitro (privzeto)</option>
     <option value="accurate">OCR: Natančno (počasneje)</option>
@@ -189,7 +189,7 @@
     <div class="optGroupTitle">Ujemanje</div>
     <label class="opt"><input type="checkbox" id="optMatchCase"> ločuj velike/male črke</label>
     <label class="opt"><input type="checkbox" id="optWholeWord"> cela beseda</label>
-    <label class="opt"><input type="checkbox" id="optRegex"> regex (regularni izraz)</label>
+    <label class="opt" title="Napredna možnost za tehnične uporabnike: omogoča iskanje z regularnimi izrazi (regex) namesto navadnega besedila/nadomestnih znakov. Če ne veste, kaj je regex, to možnost pustite izklopljeno - navadno iskanje deluje brez nje."><input type="checkbox" id="optRegex"> regex (regularni izraz)</label>
   </div>
   <div class="optGroup">
     <div class="optGroupTitle">Išči v poljih (za navadne izraze brez predpone)</div>

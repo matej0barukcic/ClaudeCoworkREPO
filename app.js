@@ -5,6 +5,7 @@
  */
 
 const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp', 'tif', 'tiff']);
+const ORIGINAL_TAB_TITLE = document.title; // za obnovitev naslova zavihka po obvestilu ob zaključku pregleda (glej finishScan())
 const INDEX_FILENAME = 'ocr-index.json';
 const IDB_DB = 'ocr-index-app';
 const IDB_STORE = 'handles';
@@ -15,6 +16,16 @@ const MAX_LOG_ENTRIES = 500; // omeji pomnilnik dnevnika – najstarejši vnosi 
 // zavihek, ker se iskanje izvaja sinhrono na glavni niti ob vsakem pritisku tipke.
 const MAX_WILDCARDS_PER_TERM = 5;   // največ toliko '*'/'?' skupaj v ENEM (ne-frazi, ne-regex) izrazu
 const MAX_SEARCH_TERM_LENGTH = 300; // trda omejitev dolžine enega izraza (velja tudi za frazo/regex način)
+// Trda omejitev dolžine CELOTNEGA iskalnega niza (QA najdba #10, 2026-09-22, DRUGI KROG – FAZA 1,
+// glej HISTORY_AI_AGENT.txt): MAX_SEARCH_TERM_LENGTH je omejeval samo POSAMEZEN izraz, preverjeno
+// šele znotraj makeTextTest() – PO TEM, ko je bil za zelo dolg prilepljen niz (npr. cel odstavek
+// besedila, pomotoma prilepljen v iskalno polje) že opravljen ves prejšnji korak (tokenizeQuery() +
+// groupByOr() + compileTerm() za VSAK od morda tisoč ločenih "izrazov", vsak s svojim
+// sestavljanjem/kompajliranjem regularnega izraza) – torej odvečno delo na vsak pritisk tipke, še
+// preden je bil katerikoli posamezen izraz sploh zavrnjen. Ta meja je namenoma precej večja od
+// MAX_SEARCH_TERM_LENGTH (dovoljuje več običajnih besed v enem iskalnem nizu), a prepreči skrajne
+// primere (ogromen prilepljen blok besedila).
+const MAX_QUERY_LENGTH = 2000;
 // Trda časovna omejitev za nalaganje OCR mehanizma (QA najdba, 2026-09-22, ČETRTI KROG – glej
 // HISTORY_AI_AGENT.txt): getWorker()/Tesseract.createWorker() lahko v nekaterih brskalniških
 // okoljih (dokazano: file:// izvor v Chromium) obvisi v neskončnost namesto da bi se zavrnil –
@@ -38,6 +49,11 @@ let folderOpBusy = false;      // ali trenutno teče "Izberi mapo…" ALI "Odpri
                                 // dve vzporedni afterFolderSelected()/rescan() operaciji, ki bi si neusklajeno
                                 // nastavljali isti globalni dirHandle/indexData – glej pickFolder()/reopenLastFolder()
 const workers = {};            // predpomnilnik tesseract.js worker-jev po ključu "profile|langs"
+let lastKnownGeneratedAt = null; // zadnji "generatedAt" iz ocr-index.json, kot ga POZNA ta zavihek
+                                  // (prebran ob odpiranju mape, posodobljen ob vsakem uspešnem
+                                  // zapisu) – glej saveIndexFile()/QA najdbo #4 (konflikt dveh
+                                  // hkrati odprtih zavihkov nad isto mapo)
+let conflictWarnedGeneratedAt = null; // dedupliciranje opozorila o konfliktu (glej saveIndexFile())
 
 // ---------- Dnevnik dogodkov/napak (samo v pomnilniku tega zavihka, za poročanje težav) ----------
 let debugLog = [];              // [{time, level: 'info'|'warn'|'error'|'debug', message, detail}]
@@ -46,6 +62,9 @@ let lastBadRegexSrc = null;     // dedupliciranje ponavljajočih se opozoril o n
 let lastBadWildcardSrc = null;  // dedupliciranje opozoril o preveč nadomestnih znakih (ReDoS omejitev)
 let lastUnsafeRegexSrc = null;  // dedupliciranje opozoril o nevarnem gnezdenju v regex načinu (QA najdba #1,
                                  // 2026-09-22 – glej hasUnsafeRegexNesting())
+let lastUnclosedQuoteQuery = null; // dedupliciranje opozorila o nezaprtem narekovaju (glej tokenizeQuery())
+let lastTooLongQuery = null;    // dedupliciranje opozorila o predolgem CELOTNEM iskalnem nizu (glej parseQuery())
+const redactedPathIds = new Map(); // relPath -> zaporedna številka znotraj TE seje, glej logPath() spodaj
 
 const el = (id) => document.getElementById(id);
 const btnPickFolder = el('btnPickFolder');
@@ -190,6 +209,22 @@ function logEvent(level, message, detail) {
     updateDebugBadge();
   }
   if (debugOverlay && debugOverlay.classList.contains('active')) renderDebugPanel();
+}
+
+// Popravek QA najdbe #8 (2026-09-22, DRUGI KROG – FAZA 1, glej HISTORY_AI_AGENT.txt): nastavitev
+// "ne shranjuj OCR besedila na disk" je bila mišljena kot splošno zasebnostno stikalo, a dnevnik
+// (dostopen prek gumba "Dnevnik" IN prek izvoza dnevnika za poročanje napak) je VEDNO razkril polna
+// imena/poti datotek in map, ne glede na to nastavitev – prebrano BESEDILO slike je bilo torej
+// zaščiteno, ime/pot datoteke (ki lahko že sama po sebi razkriva občutljivo vsebino, npr.
+// "izvidi/kri_Novak_Janez.png") pa ne. Ko je nastavitev vklopljena, logPath() namesto polne poti
+// vrne samo pripono in stabilno zaporedno številko znotraj TE seje (dovolj za sledenje/
+// razhroščevanje – "katera od N slik je odpovedala" – brez razkritja dejanskih imen/map).
+function logPath(relPath) {
+  if (!optNoPersistText || !optNoPersistText.checked) return relPath;
+  if (!redactedPathIds.has(relPath)) redactedPathIds.set(relPath, redactedPathIds.size + 1);
+  const m = /\.[^./\\]+$/.exec(relPath);
+  const ext = m ? m[0] : '';
+  return `[skrita pot #${redactedPathIds.get(relPath)}${ext}]`;
 }
 
 function updateDebugBadge() {
@@ -367,14 +402,38 @@ function redactTextForSave(data) {
   return out;
 }
 
+// Popravek QA najdbe #4 (2026-09-22, DRUGI KROG – FAZA 1, odločitev iz "grill" intervjuja, glej
+// HISTORY_AI_AGENT.txt): če je ISTA mapa hkrati odprta v DVEH zavihkih/oknih, vsak zavihek hrani
+// SVOJO kopijo `indexData` v pomnilniku – brez kakršnegakoli preverjanja bi zadnji zapis tiho
+// prepisal spremembe (lahko ure OCR dela) drugega zavihka. File System Access API nima vgrajenega
+// mehanizma za zaznavanje takega konflikta (ni "compare-and-swap" zapisa), zato ga simuliramo:
+// PRED vsakim zapisom na disk preberemo trenutni "generatedAt" ŽE NA DISKU in ga primerjamo s
+// tistim, ki ga je TA zavihek nazadnje prebral/zapisal (`lastKnownGeneratedAt`). Neujemanje pomeni,
+// da je datoteko v vmesnem času spremenil nekdo drug – uporabnika GLASNO opozorimo. Zapisa NAMENOMA
+// ne blokiramo (to bi lahko onemogočilo normalno delo enega samega zavihka po lažnem alarmu, npr.
+// če je bila datoteka ročno urejena) – uporabnik le izve, da TA zapis prepiše tuje spremembe.
 async function saveIndexFile() {
   try {
+    try {
+      const existingFh = await dirHandle.getFileHandle(INDEX_FILENAME);
+      const existingParsed = JSON.parse(await (await existingFh.getFile()).text());
+      const diskGeneratedAt = existingParsed && existingParsed.generatedAt;
+      if (lastKnownGeneratedAt !== null && diskGeneratedAt && diskGeneratedAt !== lastKnownGeneratedAt
+          && conflictWarnedGeneratedAt !== diskGeneratedAt) {
+        conflictWarnedGeneratedAt = diskGeneratedAt;
+        logEvent('warn', `Zaznan mogoč konflikt: ocr-index.json je bil na disku spremenjen (${diskGeneratedAt}) po tem, ko ga je ta zavihek nazadnje prebral/zapisal (${lastKnownGeneratedAt}) – verjetno je ista mapa odprta tudi v drugem zavihku/oknu. Ta zapis bo ZDAJ PREPISAL tiste spremembe. Priporočilo: uporabljajte samo EN zavihek/okno na mapo hkrati.`);
+      }
+    } catch (e) {
+      // Datoteka morda še ne obstaja (prvi zapis v to mapo) ali je bila medtem izbrisana/poškodovana –
+      // to NI namen tega preverjanja (namen je le zaznati sočasno UREJANJE), zato tiho ignoriramo.
+    }
     const fh = await dirHandle.getFileHandle(INDEX_FILENAME, { create: true });
     const writable = await fh.createWritable();
     indexData.generatedAt = new Date().toISOString();
     const toWrite = optNoPersistText.checked ? redactTextForSave(indexData) : indexData;
     await writable.write(JSON.stringify(toWrite, null, 0));
     await writable.close();
+    lastKnownGeneratedAt = indexData.generatedAt;
   } catch (e) {
     console.error('Napaka pri shranjevanju indeksa:', e);
     logEvent('error', 'Napaka pri shranjevanju ocr-index.json: ' + e.message, e);
@@ -428,21 +487,34 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+// Popravek QA najdbe #11 (2026-09-22, DRUGI KROG – FAZA 1, glej HISTORY_AI_AGENT.txt): prej se je
+// `workers[key]` nastavil ŠELE PO uspešno razrešenem Tesseract.createWorker() (torej PO `await`).
+// Če sta dva klica getWorker() z istim ključem (profil+jeziki) stekla znotraj tega okna – npr.
+// serijski pregled mape in hkraten posamičen "Natančno" OCR ukaz na drugi vrstici – bi OBA videla
+// `workers[key]` še kot `undefined` in OBA zagnala SVOJ Tesseract.createWorker(): eden od dveh
+// dejansko zagnanih worker-jev bi ostal "osirotel" (worker teče v ozadju, a ga noben del kode več
+// ne uporablja, ker ga je drugi klic v predpomnilniku prepisal) – nepotrebna poraba pomnilnika/CPU
+// brez kakršnekoli vidne napake. Zdaj se v predpomnilnik SINHRONO (pred prvim `await`) shrani sam
+// Promise (ne šele razrešen worker) – drugi hkratni klic z istim ključem zato takoj dobi ISTO
+// Promise namesto da bi zagnal svoj worker. Če se Promise zavrne (napaka pri nalaganju), se
+// neuspeli vnos odstrani iz predpomnilnika, da naslednji klic dobi svež poskus namesto trajno
+// "pokvarjenega" predpomnjenega zavrnjenega Promise-a.
 async function getWorker(profile, langs) {
   const key = profile + '|' + langs.join('+');
   if (workers[key]) return workers[key];
   // Ker en sam brskalniški zavihek hkrati praviloma obdeluje eno vrsto OCR-ja,
   // ohranimo največ dva worker-ja (fast + accurate) v predpomnilniku, da preklop
   // med njima med posamičnim "Natančno" ukazom in serijskim pregledom ni prepočasen.
-  const w = await Tesseract.createWorker(langs.join('+'), 1, {
+  const workerPromise = Tesseract.createWorker(langs.join('+'), 1, {
     workerPath: absAssetUrl('assets/worker.min.js'),
     corePath: absAssetUrl('assets/tesseract-core-simd-lstm.wasm.js'),
     langPath: absAssetUrl(`assets/tessdata/${profile}`),
     gzip: true,
     logger: () => {},
   });
-  workers[key] = w;
-  return w;
+  workers[key] = workerPromise;
+  workerPromise.catch(() => { if (workers[key] === workerPromise) delete workers[key]; });
+  return workerPromise;
 }
 
 // ---------- Predobdelava slike za natančen OCR način ----------
@@ -605,6 +677,10 @@ async function afterFolderSelected() {
   // blok klicatelja (pickFolder()/reopenLastFolder()).
   setStatus('Nalagam shranjeni indeks (če obstaja) …');
   indexData = await loadIndexFile();
+  // Glej QA najdbo #4/saveIndexFile(): tu zabeležimo, kateri "generatedAt" ta zavihek POZNA ob
+  // odpiranju mape – izhodišče za poznejše zaznavanje konflikta z drugim zavihkom/oknom.
+  lastKnownGeneratedAt = indexData.generatedAt || null;
+  conflictWarnedGeneratedAt = null; // nova mapa – prejšnje opozorilo (če je bilo) ni več relevantno
   await rescan(true); // glej opombo v rescan() – ta klic je naravni zaključek TE operacije odpiranja mape
 }
 
@@ -639,6 +715,7 @@ async function rescan(fromFolderOpen) {
     return;
   }
   stopRequested = false;
+  document.title = ORIGINAL_TAB_TITLE; // ponastavi naslov zavihka (glej finishScan()) - nov pregled se je pravkar začel
   setBusy(true);
   setProgress(true, 0, 'Preiskujem mapo …');
   setStatus('Preiskujem mapo …');
@@ -667,7 +744,7 @@ async function rescan(fromFolderOpen) {
       f._fileObj = file;
     } catch (e) {
       f.size = 0; f.mtime = 0; f._error = 'Napaka branja: ' + e.message;
-      logEvent('warn', `Datoteke ni bilo mogoče prebrati (${f.relPath}): ` + e.message, e);
+      logEvent('warn', `Datoteke ni bilo mogoče prebrati (${logPath(f.relPath)}): ` + e.message, e);
     }
   }
 
@@ -700,6 +777,7 @@ async function rescan(fromFolderOpen) {
   }
 
   setStatus(`Najdenih ${currentFiles.length} slik. Za OCR: ${toProcess.length}.`);
+  let done = 0; // deljeno med OCR zanko spodaj in finishScan() sporočilom ob morebitni ustavitvi
 
   if (toProcess.length > 0) {
     const langs = selectedLangs();
@@ -717,7 +795,6 @@ async function rescan(fromFolderOpen) {
       return;
     }
 
-    let done = 0;
     for (const f of toProcess) {
       if (stopRequested) break;
       setProgress(true, Math.round((done / toProcess.length) * 100),
@@ -731,7 +808,7 @@ async function rescan(fromFolderOpen) {
         indexData.files[f.relPath] = {
           size: f.size, mtime: f.mtime, text: '', ocrAt: new Date().toISOString(), error: String(e.message || e), mode: profile,
         };
-        logEvent('error', `OCR napaka pri sliki (${f.relPath}, profil ${profile}): ` + (e.message || e), e);
+        logEvent('error', `OCR napaka pri sliki (${logPath(f.relPath)}, profil ${profile}): ` + (e.message || e), e);
       }
       done++;
       // Vmesno shranjevanje na vsakih 15 datotek, da se ob prekinitvi ne izgubi delo
@@ -745,10 +822,22 @@ async function rescan(fromFolderOpen) {
   await saveIndexFile();
   const durationSec = ((Date.now() - scanStartedAt) / 1000).toFixed(1);
   logEvent('info', `Pregled končan v ${durationSec}s – ${currentFiles.length} slik skupaj, ${toProcess.length} obdelanih z OCR.`);
-  finishScan(stopRequested ? 'Ustavljeno – delni rezultati so shranjeni.' : 'Pregled končan.');
+  // Popravek (grillme-custom, 2026-09-23 – FAZA 2, glej HISTORY_AI_AGENT.txt): prej je sporočilo ob
+  // ustavitvi ("Ustavljeno – delni rezultati so shranjeni.") povedalo SAMO, da so delni rezultati
+  // shranjeni, ne pa TUDI, koliko slik je bilo dejansko obdelanih pred ustavitvijo – ta podatek je bil
+  // sicer na kratko viden v vrstici napredka med samim OCR-jem, a je po ustavitvi izginil. Zdaj je
+  // natančno število (doneCount/toProcessTotal) del samega sporočila o ustavitvi.
+  finishScan(stopRequested
+    ? `Ustavljeno – delni rezultati so shranjeni (obdelanih ${done}/${toProcess.length}).`
+    : 'Pregled končan.');
 }
 
 function finishScan(msg) {
+  // Popravek (grillme-custom, 2026-09-23 - FAZA 2, glej HISTORY_AI_AGENT.txt): naslov zavihka se ob
+  // zaključku (dolgega) pregleda spremeni, da je zaznaven tudi, če je uporabnik medtem preklopil na
+  // drug zavihek/aplikacijo - vrne se na izvirni naslov ob naslednjem začetku novega pregleda (glej
+  // rescan()).
+  document.title = (stopRequested ? '⏸ Ustavljeno – ' : '✓ Končano – ') + ORIGINAL_TAB_TITLE;
   setBusy(false);
   setProgress(false);
   setStatus(msg, `${currentFiles.length} slik v indeksu`);
@@ -765,7 +854,7 @@ function stopScan() {
 
 async function reOcrSingle(relPath, btnEl) {
   if (scanning) {
-    logEvent('warn', `"Natančno" preklicano (${relPath}) – najprej se mora zaključiti pregled mape, ki je v teku.`);
+    logEvent('warn', `"Natančno" preklicano (${logPath(relPath)}) – najprej se mora zaključiti pregled mape, ki je v teku.`);
     setStatus('Počakajte, da se zaključi pregled mape, nato poskusite znova.');
     return;
   }
@@ -773,7 +862,7 @@ async function reOcrSingle(relPath, btnEl) {
     // Zaščita pred dvojnim klikom/sočasnim sprožanjem ISTE ali DRUGE vrstice: gumb bi se
     // sicer po vsakem vmesnem renderTable() poklicu (npr. med tipkanjem v iskalno polje)
     // videti spet "omogočen" (glej QA #6), čeprav prejšnji "Natančno" še ni končan.
-    logEvent('warn', `"Natančno" preklicano (${relPath}) – druga slika (${singleOcrRelPath}) se še obdeluje.`);
+    logEvent('warn', `"Natančno" preklicano (${logPath(relPath)}) – druga slika (${logPath(singleOcrRelPath)}) se še obdeluje.`);
     setStatus('Počakajte, da se zaključi "Natančno" OCR prejšnje slike, nato poskusite znova.');
     return;
   }
@@ -798,7 +887,7 @@ async function reOcrSingle(relPath, btnEl) {
     await saveIndexFile();
     setStatus(`Natančen OCR končan: ${relPath}`);
   } catch (e) {
-    logEvent('error', `Napaka pri natančnem (accurate) OCR posamezne slike (${relPath}): ` + e.message, e);
+    logEvent('error', `Napaka pri natančnem (accurate) OCR posamezne slike (${logPath(relPath)}): ` + e.message, e);
     setStatus('Napaka pri natančnem OCR: ' + e.message + friendlyOcrErrorHint(e));
   } finally {
     singleOcrBusy = false;
@@ -1073,6 +1162,21 @@ function tokenizeQuery(query) {
     if (!inQuotes && c === '|') { push(); tokens.push('|'); continue; }
     cur += c;
   }
+  // Popravek QA najdbe #9 (2026-09-22, DRUGI KROG – FAZA 1, glej HISTORY_AI_AGENT.txt): nezaprt
+  // narekovaj (npr. iskalni niz `"abc def`) je prej pustil `inQuotes` odprt do konca niza –
+  // presledki znotraj se niso razdelili na ločene izraze, dobljeni niz pa (ker se NE konča z `"`,
+  // le začne z njim) v makeTextTest() sploh ni bil prepoznan kot fraza, temveč kot en sam dobesedni/
+  // nadomestni ("wildcard") izraz z vključenim narekovajem – iskanje je tiho "prenehalo delovati",
+  // brez kakršnegakoli opozorila uporabniku. Zdaj manjkajoči zaključni narekovaj SAMODEJNO dodamo
+  // (najverjetnejša uporabnikova namera – fraza do konca vnosa) IN uporabnika enkratno (dedupl.)
+  // opozorimo, da lahko po potrebi popravi vnos.
+  if (inQuotes) {
+    cur += '"';
+    if (lastUnclosedQuoteQuery !== query) {
+      lastUnclosedQuoteQuery = query;
+      logEvent('warn', `Iskalni niz vsebuje nezaprt narekovaj (") – zaključni narekovaj je bil samodejno dodan na konec (obravnavano kot fraza do konca vnosa).`);
+    }
+  }
   push();
   return tokens;
 }
@@ -1144,6 +1248,13 @@ function compileTerm(rawTerm, settings) {
 function parseQuery(query, settings) {
   const trimmed = query.trim();
   if (!trimmed) return () => true;
+  if (trimmed.length > MAX_QUERY_LENGTH) {
+    if (lastTooLongQuery !== trimmed) {
+      lastTooLongQuery = trimmed;
+      logEvent('warn', `Iskalni niz je predolg (${trimmed.length} znakov, dovoljeno največ ${MAX_QUERY_LENGTH}) – razčlenjevanje preskočeno, iskanje ne bo ujemalo ničesar.`);
+    }
+    return () => false;
+  }
   const tokens = tokenizeQuery(trimmed);
   const orGroups = groupByOr(tokens).map((group) => group.map((t) => compileTerm(t, settings)).filter(Boolean));
   const validGroups = orGroups.filter((g) => g.length > 0);
@@ -1154,6 +1265,7 @@ function parseQuery(query, settings) {
 function buildHighlightRegexes(qRaw, settings) {
   const trimmed = qRaw.trim();
   if (!trimmed) return [];
+  if (trimmed.length > MAX_QUERY_LENGTH) return []; // glej isto omejitev/opozorilo v parseQuery()
   const tokens = tokenizeQuery(trimmed);
   const regexes = [];
   for (const rawTerm of tokens) {
@@ -1317,7 +1429,7 @@ async function openImageRow(relPath) {
     // naložiti sliko, preden se URL prekliče – po nalaganju slika v novem zavihku URL-ja ne potrebuje več.
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   } catch (e) {
-    logEvent('error', `Slike ni bilo mogoče odpreti (${relPath}): ` + e.message, e);
+    logEvent('error', `Slike ni bilo mogoče odpreti (${logPath(relPath)}): ` + e.message, e);
     alert('Slike ni bilo mogoče odpreti: ' + e.message);
   }
 }
