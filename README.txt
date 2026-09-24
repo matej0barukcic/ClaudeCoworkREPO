@@ -84,6 +84,107 @@ sicer še delovalo, OCR indeksiranje vsebine pa ne zanesljivo). Namesto tega:
    Ujemanje je v tabeli obarvano.
 6. Dvoklik na vrstico (ali gumb "Odpri") odpre sliko v novem zavihku brskalnika.
 
+ČE JE IZVAJANJE .BAT/.COMMAND DATOTEK BLOKIRANO (IT POLITIKA SLUŽBENEGA
+RAČUNALNIKA)
+------------------------------------------------------------------------
+Na nekaterih službenih (IT-upravljanih) računalnikih varnostna politika
+podjetja (npr. AppLocker/Software Restriction Policy na Windows) na splošno
+prepreči IZVAJANJE skriptnih datotek (.bat, .ps1, .command ipd.) — to NI
+napaka te aplikacije, ampak nastavitev vašega računalnika, ki jo upravlja IT
+oddelek. Prepoznate jo po tem, da se ob dvokliku na "zazeni-windows.bat"
+prikaže opozorilo, da je izvajanje te vrste datotek blokirano s politiko
+podjetja.
+
+V tem primeru lahko strežnik zaženete ROČNO, brez izvajanja skriptne
+datoteke — z vpisovanjem ukazov neposredno v že odprto ukazno okno (to
+politike, ki blokirajo izvajanje SKRIPTNIH DATOTEK, navadno NE preprečijo,
+ker gre za uporabo že dovoljenega programa "cmd.exe", ne za zagon nove
+datoteke):
+
+1. Odprite ukazno vrstico (Command Prompt): v iskanje v opravilni vrstici
+   Windows vtipkajte "cmd" in pritisnite Enter (ali PowerShell, če je cmd.exe
+   prav tako blokiran — ukazi spodaj delujejo v obeh).
+2. V ukazno okno prekopirajte spodnja DVA ukaza, enega za drugim (namesto poti
+   spodaj vstavite DEJANSKO pot do mape z aplikacijo na vašem računalniku —
+   dobite jo tako, da v Raziskovalcu odprete to mapo in kliknete na naslovno
+   vrstico, da se izpiše polna pot):
+   ```
+   cd "C:\pot\do\mape\ocr-index-app"
+   python -m http.server 8934 --bind 127.0.0.1
+   ```
+   (Če ukaz "python" javi napako "ni prepoznan", poskusite namesto njega
+   "python3" ali "py -3".) Okno bo izpisalo nekaj podobnega "Serving HTTP on
+   127.0.0.1 port 8934 ..." — TO OKNO PUSTITE ODPRTO (v njem teče strežnik).
+
+   POMEMBNO: na nekaterih strožje upravljanih računalnikih IT politika ne
+   blokira le izvajanja SKRIPTNIH DATOTEK (.bat/.ps1), temveč tudi neposreden
+   zagon samega programa "python.exe" — ne glede na to, ali ga zaženete iz
+   .bat datoteke ali ročno vtipkanega ukaza (potrjeno na resničnem primeru,
+   glej HISTORY_AI_AGENT.txt). Prepoznate to po tem, da se ob vpisu zgornjega
+   ukaza "python -m http.server ..." prikaže IT opozorilo. V tem primeru
+   uporabite spodnji razdelek "ČE JE TUDI PYTHON.EXE BLOKIRAN (ALTERNATIVA
+   BREZ PYTHONA)" namesto nadaljevanja korakov spodaj.
+3. Odprite Microsoft Edge (ali kateri koli brskalnik) in v naslovno vrstico
+   vpišite:
+   ```
+   http://127.0.0.1:8934/index.html
+   ```
+   Če je vrata 8934 na vašem računalniku že zasedena (redko), boste dobili
+   napako "Address already in use" — v tem primeru v 2. koraku zamenjajte
+   "8934" s poljubno drugo številko (npr. 8935) in enako številko uporabite
+   tudi v naslovu brskalnika v 3. koraku.
+4. Ko končate z uporabo aplikacije, se vrnite v ukazno okno iz 2. koraka in
+   pritisnite Ctrl+C, da ustavite strežnik (ali preprosto zaprite okno).
+
+Ta način zahteva enak korak vsakič znova ob novem zagonu računalnika/seje
+(zaganjalnik "zazeni-windows.bat" bi sicer to naredil samodejno z enim
+dvoklikom) — je pa edini znani obhod za računalnike, kjer IT politika
+onemogoča izvajanje skriptnih datotek.
+
+ČE JE TUDI PYTHON.EXE BLOKIRAN (ALTERNATIVA BREZ PYTHONA)
+------------------------------------------------------------------------
+Če vam IT politika prepreči tudi zagon samega "python.exe" (glej opozorilo
+zgoraj), lahko namesto Pythona za lokalni strežnik uporabite PowerShell, ki
+je na Windows računalnikih praviloma že dovoljen program in ni bil ob tem
+odkrit kot blokiran (potrjeno na resničnem primeru). Ta način NE zažene
+nobenega novega .exe programa — vsa logika teče znotraj že odprtega
+PowerShell okna prek vgrajenega .NET razreda "System.Net.HttpListener".
+
+1. Odprite PowerShell: v iskanje v opravilni vrstici Windows vtipkajte
+   "PowerShell" in pritisnite Enter.
+2. V PowerShell okno prekopirajte spodnji ukaz, ki premakne trenutno mapo na
+   mapo z aplikacijo (namesto poti spodaj vstavite DEJANSKO pot do mape z
+   aplikacijo na vašem računalniku):
+   ```
+   cd "C:\pot\do\mape\ocr-index-app"
+   ```
+3. Nato v isto okno prilepite CELOTNO vsebino priložene datoteke
+   "streznik-powershell.ps1" (odprite jo v Beležnici/Notepad, izberite vso
+   vsebino s Ctrl+A, kopirajte s Ctrl+C, nato jo prilepite v PowerShell okno
+   in pritisnite Enter). NE zaganjajte te datoteke z dvoklikom niti z ukazom
+   ".\streznik-powershell.ps1" — samo prilepite njeno vsebino neposredno v
+   okno, da se izognete morebitni ločeni politiki o izvajanju .ps1 datotek.
+   Okno bo izpisalo "Lokalni streznik (PowerShell, brez Pythona) tece na:
+   http://127.0.0.1:8934/index.html" — TO OKNO PUSTITE ODPRTO.
+4. Odprite Microsoft Edge (ali kateri koli brskalnik) in v naslovno vrstico
+   vpišite:
+   ```
+   http://127.0.0.1:8934/index.html
+   ```
+   Če je vrata 8934 na vašem računalniku že zasedena (redko), boste dobili
+   napako ob 3. koraku — v tem primeru na vrhu datoteke
+   "streznik-powershell.ps1" spremenite vrstico "$Port = 8934" na drugo
+   številko (npr. 8935), ponovite 3. korak in enako številko uporabite tudi
+   v naslovu brskalnika v 4. koraku.
+5. Ko končate z uporabo aplikacije, se vrnite v PowerShell okno iz 3. koraka
+   in pritisnite Ctrl+C, da ustavite strežnik (ali preprosto zaprite okno).
+
+Ta način je bil dejansko preizkušen (postrežba index.html, app.js in
+odgovor 404 za neobstoječo datoteko) v razvojnem okolju, NI PA ŠE bil
+preizkušen na resničnem IT-upravljanem Windows računalniku v celoti (torej
+z dejanskim odpiranjem strani v brskalniku in izvedbo OCR pregleda) — glej
+odprto točko v HISTORY_AI_AGENT.txt.
+
 OCR KAKOVOST: HITRO PROTI NATANČNO
 ------------------------------------
 Privzeto je vklopljen način "Hitro" — uporablja manjši, hitrejši OCR model, tako da
