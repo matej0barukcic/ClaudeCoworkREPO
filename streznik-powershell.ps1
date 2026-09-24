@@ -70,10 +70,31 @@ try {
 
             if (Test-Path -LiteralPath $FullPath -PathType Leaf) {
                 $Ext = [System.IO.Path]::GetExtension($FullPath).ToLower()
-                $Bytes = [System.IO.File]::ReadAllBytes($FullPath)
+                # Popravek (2026-09-24, QA krog po realnem testu na IT-omejenem Windows racunalniku -
+                # glej HISTORY_AI_AGENT.txt): velike datoteke (npr. tesseract-core-simd-lstm.wasm.js,
+                # ~3,9 MB) so pri prejsnji razlicici (en sam ReadAllBytes + en sam Write klic) na
+                # uporabnikovem racunalniku povzrocile "NetworkError" pri nalaganju znotraj OCR
+                # worker-ja - v tem razvojnem okolju tega ni bilo mogoce ponoviti niti z resnicnim
+                # PowerShell 7 + Playwright/Chromium testom (worker se je nalozil brez napake), a je
+                # verjeten vzrok korporativna varnostna programska oprema (EDR/protivirusni pregled
+                # omreznega prometa), ki lahko moti prenos velikih odzivov. Kot dodatno utrditev zdaj
+                # datoteko posljemo po delih (64 KB), z eksplicitnim Flush() po vsakem delu, in
+                # izklopimo "keep-alive" (vsaka zahteva dobi svojo povezavo) - oboje zmanjsa tveganje,
+                # da bi posredni omrezni sloj prekinil prenos velike datoteke na pol poti.
                 $Response.ContentType = if ($ContentTypes.ContainsKey($Ext)) { $ContentTypes[$Ext] } else { "application/octet-stream" }
-                $Response.ContentLength64 = $Bytes.Length
-                $Response.OutputStream.Write($Bytes, 0, $Bytes.Length)
+                $Response.Headers.Add("Cache-Control", "no-store")
+                $Response.KeepAlive = $false
+                $FileStream = [System.IO.File]::OpenRead($FullPath)
+                try {
+                    $Response.ContentLength64 = $FileStream.Length
+                    $Buffer = New-Object byte[] 65536
+                    while (($Read = $FileStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+                        $Response.OutputStream.Write($Buffer, 0, $Read)
+                        $Response.OutputStream.Flush()
+                    }
+                } finally {
+                    $FileStream.Close()
+                }
             } else {
                 $Response.StatusCode = 404
                 $NotFoundBytes = [System.Text.Encoding]::UTF8.GetBytes("404 - datoteka ni najdena: $UrlPath")
